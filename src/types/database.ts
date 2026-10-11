@@ -65,6 +65,8 @@ export interface Order {
   payment_method: 'unified_qr' | 'cash_on_delivery' | 'card_on_delivery';
   payment_status?: 'pending' | 'paid';
   notes?: string;
+  contract_id?: string;
+  telegram_chat_id?: number;
   created_at: string;
 }
 
@@ -97,6 +99,8 @@ export interface ServiceTicket {
   issue_description: string;
   attachment_url?: string;
   status: 'new' | 'in_review' | 'repairing' | 'ready' | 'closed';
+  contract_id?: string;
+  telegram_chat_id?: number;
   created_at: string;
 }
 
@@ -108,3 +112,37 @@ export interface PromoCode {
   min_order_amount: number;
   is_active: boolean;
 }
+
+export type ContractStatus = 'active' | 'paused' | 'terminated' | 'completed' | 'machine_returned';
+
+export type ContractReminderStatus =
+  | 'idle'
+  | 'reminded_primary'
+  | 'reminded_followup'
+  | 'needs_attention'
+  | 'ordered';
+
+export interface Contract {
+  id: string;
+  contract_number: string;
+  customer_name: string;
+  customer_phone: string;
+  telegram_chat_id?: number;
+  language: 'ru' | 'uz';
+  machine_model: string;
+  machine_serial?: string;
+  contract_start_date: string; // YYYY-MM-DD
+  contract_end_date?: string; // YYYY-MM-DD
+  status: ContractStatus;
+  min_capsule_boxes: number;
+  cycle_days: number;
+  last_purchase_date?: string; // YYYY-MM-DD
+  next_purchase_date: string; // YYYY-MM-DD
+  reminder_status: ContractReminderStatus;
+  last_reminder_sent_at?: string;
+  last_order_items: OrderItem[];
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+

@@ -7,7 +7,8 @@ import { routing } from '@/i18n/routing';
 import { TopAnnouncement } from '@/components/layout/TopAnnouncement';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
-import { CartDrawer } from '@/components/layout/CartDrawer';
+import { SiteShell } from '@/components/layout/SiteShell';
+import Script from 'next/script';
 import '@/app/globals.css';
 
 const spaceGrotesk = Space_Grotesk({
@@ -73,6 +74,7 @@ export default async function RootLayout({
       className={`dark ${spaceGrotesk.variable} ${manrope.variable} ${cormorant.variable}`}
     >
       <head>
+        <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -92,11 +94,7 @@ export default async function RootLayout({
       </head>
       <body className="min-h-screen flex flex-col bg-background text-foreground antialiased selection:bg-brand-lime selection:text-black font-body">
         <NextIntlClientProvider locale={locale} messages={messages}>
-          <TopAnnouncement />
-          <Header />
-          <main className="flex-1 w-full">{children}</main>
-          <Footer />
-          <CartDrawer />
+          <SiteShell>{children}</SiteShell>
         </NextIntlClientProvider>
       </body>
     </html>

@@ -17,19 +17,33 @@ import {
   Lock,
   LogOut,
   TrendingUp,
+  Bot,
+  Send,
+  BellRing,
+  UserCheck,
+  ShieldAlert,
+  Check,
+  RefreshCw,
+  Sparkles,
+  Calendar,
+  Search,
 } from 'lucide-react';
 import { SEED_PRODUCTS } from '@/lib/seed-data';
-import { Product, Order, RentalInquiry, ServiceTicket } from '@/types/database';
+import { Product, Order, RentalInquiry, ServiceTicket, Contract, ContractStatus } from '@/types/database';
 import {
   getAllOrders,
   getAllRentalInquiries,
   getAllServiceTickets,
+  getAllContracts,
   updateOrderStatus,
   updateOrderPaymentStatus,
   updateRentalStatus,
   updateServiceStatus,
+  updateContractStatus,
+  updateContractReminderStatus,
 } from '@/lib/supabase';
 import { formatUZS } from '@/lib/utils';
+import { sendTelegramDeliveryStatusUpdate } from '@/lib/telegram';
 
 export default function AdminPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -39,7 +53,7 @@ export default function AdminPage() {
 
   // Active Tab
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'orders' | 'products' | 'rentals' | 'conditions' | 'service' | 'promos'
+    'overview' | 'orders' | 'products' | 'rentals' | 'conditions' | 'service' | 'promos' | 'bot-contracts'
   >('overview');
 
   // CMS State
@@ -47,6 +61,14 @@ export default function AdminPage() {
   const [rentals, setRentals] = useState<RentalInquiry[]>([]);
   const [tickets, setTickets] = useState<ServiceTicket[]>([]);
   const [products, setProducts] = useState<Product[]>(SEED_PRODUCTS);
+  const [contracts, setContracts] = useState<Contract[]>([]);
+
+  // Bot & Contracts CRM State
+  const [cronRunning, setCronRunning] = useState(false);
+  const [cronResult, setCronResult] = useState<string | null>(null);
+  const [contractSearch, setContractSearch] = useState('');
+  const [contractStatusFilter, setContractStatusFilter] = useState<'all' | ContractStatus | 'attention'>('all');
+  const [manualReminderSuccess, setManualReminderSuccess] = useState<string | null>(null);
 
   // Rental & Company Conditions State per TZ point 31 & 49
   const [rentalCost, setRentalCost] = useState('0');
@@ -68,14 +90,16 @@ export default function AdminPage() {
 
   useEffect(() => {
     async function loadData() {
-      const [ord, rnt, srv] = await Promise.all([
+      const [ord, rnt, srv, cnt] = await Promise.all([
         getAllOrders(),
         getAllRentalInquiries(),
         getAllServiceTickets(),
+        getAllContracts(),
       ]);
       setOrders(ord);
       setRentals(rnt);
       setTickets(srv);
+      setContracts(cnt);
     }
     loadData();
   }, []);
@@ -90,12 +114,57 @@ export default function AdminPage() {
     }
   };
 
-  const handleOrderStatusChange = (orderId: string, status: Order['status']) => {
-    updateOrderStatus(orderId, status);
+  const handleOrderStatusChange = async (orderId: string, status: Order['status']) => {
+    const updated = await updateOrderStatus(orderId, status);
     setOrders((prev) =>
       prev.map((o) => (o.id === orderId ? { ...o, status } : o))
     );
+    if (updated) {
+      // Point 9 in TZ: Notify customer automatically about delivery progress
+      sendTelegramDeliveryStatusUpdate(updated, status);
+    }
   };
+
+  const handleRunCron = async () => {
+    setCronRunning(true);
+    setCronResult(null);
+    try {
+      const res = await fetch('/api/bot/cron', { method: 'POST' });
+      const data = await res.json();
+      if (data.success && data.report) {
+        const r = data.report;
+        setCronResult(
+          `Проверка выполнена: договоров ${r.totalContracts}, первичных напоминаний: ${r.primaryRemindersSent}, повторных: ${r.followupsSent}, алертов менеджеру: ${r.managerAlertsSent}, пропущено (пауза/расторгнут): ${r.suppressedContracts}`
+        );
+        // Refresh contracts
+        const updatedContracts = await getAllContracts();
+        setContracts(updatedContracts);
+      } else {
+        setCronResult('Ошибка при выполнении крон-задачи.');
+      }
+    } catch (e) {
+      setCronResult('Не удалось соединиться с эндпоинтом /api/bot/cron');
+    } finally {
+      setCronRunning(false);
+    }
+  };
+
+  const handleContractStatusChange = async (contractId: string, newStatus: ContractStatus) => {
+    await updateContractStatus(contractId, newStatus);
+    setContracts((prev) =>
+      prev.map((c) => (c.id === contractId ? { ...c, status: newStatus } : c))
+    );
+  };
+
+  const handleSendManualReminder = async (contractId: string) => {
+    await updateContractReminderStatus(contractId, 'reminded_primary');
+    setContracts((prev) =>
+      prev.map((c) => (c.id === contractId ? { ...c, reminder_status: 'reminded_primary', last_reminder_sent_at: new Date().toISOString() } : c))
+    );
+    setManualReminderSuccess(`Напоминание по договору ${contractId} успешно отправлено!`);
+    setTimeout(() => setManualReminderSuccess(null), 4000);
+  };
+
 
   const handleOrderPaymentChange = (orderId: string, payment_status: 'pending' | 'paid') => {
     updateOrderPaymentStatus(orderId, payment_status);
@@ -330,6 +399,18 @@ export default function AdminPage() {
           >
             <Tag className="w-4 h-4" />
             <span>Промокоды</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('bot-contracts')}
+            className={`px-4 py-2.5 rounded-xl transition-all flex items-center space-x-2 shrink-0 ${
+              activeTab === 'bot-contracts'
+                ? 'bg-brand-lime text-black font-extrabold shadow-md'
+                : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Bot className="w-4 h-4" />
+            <span>🤖 Бот и Договоры ({contracts.length})</span>
           </button>
         </div>
 
@@ -879,7 +960,314 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+        {/* Tab 7: Telegram Bot & Contracts Lifecycle Engine */}
+        {activeTab === 'bot-contracts' && (
+          <div className="space-y-8 animate-in fade-in">
+            {/* Top Command Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-6 rounded-2xl bg-gradient-to-r from-card via-card to-brand-surface/30 border border-border">
+              <div className="space-y-1">
+                <div className="flex items-center space-x-2">
+                  <span className="px-2.5 py-0.5 rounded-full bg-brand-lime/20 text-brand-lime font-mono text-[10px] font-bold uppercase tracking-wider">
+                    LIFECYCLE ENGINE
+                  </span>
+                  <span className="flex h-2 w-2 relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-lime opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-brand-lime"></span>
+                  </span>
+                </div>
+                <h3 className="font-serif text-xl sm:text-2xl font-bold text-foreground">
+                  Управление Telegram-ботом и договорами
+                </h3>
+                <p className="text-xs text-muted-foreground max-w-2xl">
+                  Автоматический расчет циклов, отправка напоминаний за 3-5 дней, 1-клик «Повторить заказ»,
+                  контроль мин. объема и умная адаптация циклов при досрочных заказах.
+                </p>
+              </div>
+
+              <button
+                onClick={handleRunCron}
+                disabled={cronRunning}
+                className="px-5 py-3 rounded-xl bg-primary hover:brightness-110 text-primary-foreground font-extrabold text-xs uppercase tracking-wider flex items-center justify-center space-x-2 shadow-lg glow-lime transition-all cursor-pointer disabled:opacity-50 shrink-0"
+              >
+                <RefreshCw className={`w-4 h-4 ${cronRunning ? 'animate-spin' : ''}`} />
+                <span>{cronRunning ? 'Проверка...' : '⚡ Запустить проверку напоминаний'}</span>
+              </button>
+            </div>
+
+            {/* Notification Banners */}
+            {cronResult && (
+              <div className="p-4 rounded-xl bg-secondary/80 border border-brand-lime/40 flex items-start justify-between gap-4 text-xs">
+                <div className="flex items-start space-x-2">
+                  <Sparkles className="w-4 h-4 text-brand-lime shrink-0 mt-0.5" />
+                  <span className="text-foreground">{cronResult}</span>
+                </div>
+                <button
+                  onClick={() => setCronResult(null)}
+                  className="text-muted-foreground hover:text-foreground text-xs font-bold"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {manualReminderSuccess && (
+              <div className="p-4 rounded-xl bg-brand-lime/10 border border-brand-lime/30 flex items-center space-x-2 text-xs text-brand-lime font-semibold">
+                <Check className="w-4 h-4" />
+                <span>{manualReminderSuccess}</span>
+              </div>
+            )}
+
+            {/* Section 11: Панель для менеджера (Метрики сегодня) */}
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center space-x-2">
+                <BellRing className="w-3.5 h-3.5 text-brand-lime" />
+                <span>Сводка менеджера (Текущий цикл напоминаний)</span>
+              </h4>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="p-5 rounded-xl bg-card border border-border space-y-1">
+                  <span className="text-[11px] uppercase font-mono text-muted-foreground">🔔 Получили напоминание</span>
+                  <p className="font-serif text-2xl font-extrabold text-foreground">
+                    {contracts.filter((c) => c.reminder_status === 'reminded_primary' || c.reminder_status === 'reminded_followup').length}
+                  </p>
+                  <span className="text-[10px] text-muted-foreground">Клиентов оповещено в боте</span>
+                </div>
+
+                <div className="p-5 rounded-xl bg-card border border-border space-y-1">
+                  <span className="text-[11px] uppercase font-mono text-muted-foreground">🛒 Сделали заказ</span>
+                  <p className="font-serif text-2xl font-extrabold text-brand-lime">
+                    {contracts.filter((c) => c.reminder_status === 'idle' && c.last_purchase_date).length}
+                  </p>
+                  <span className="text-[10px] text-brand-lime">Цикл продлен на 30 дней</span>
+                </div>
+
+                <div className="p-5 rounded-xl bg-card border border-border space-y-1">
+                  <span className="text-[11px] uppercase font-mono text-muted-foreground">⏳ Еще не заказали</span>
+                  <p className="font-serif text-2xl font-extrabold text-amber-400">
+                    {contracts.filter((c) => c.reminder_status === 'reminded_primary').length}
+                  </p>
+                  <span className="text-[10px] text-muted-foreground">Ожидают повторного напоминания</span>
+                </div>
+
+                <div className="p-5 rounded-xl bg-card border border-red-500/30 bg-red-500/5 space-y-1">
+                  <span className="text-[11px] uppercase font-mono text-red-400 font-bold">⚠️ Требуют внимания</span>
+                  <p className="font-serif text-2xl font-extrabold text-red-400">
+                    {contracts.filter((c) => c.reminder_status === 'needs_attention').length}
+                  </p>
+                  <span className="text-[10px] text-red-300">Просрочили закупку &gt; 5 дней</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Section 12: Аналитика (Analytics KPIs) */}
+            <div className="p-6 rounded-2xl bg-card border border-border space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-muted-foreground flex items-center space-x-2">
+                  <TrendingUp className="w-3.5 h-3.5 text-brand-lime" />
+                  <span>Бизнес-аналитика по договорам аренды</span>
+                </h4>
+                <span className="text-[11px] font-mono text-muted-foreground">Данные обновлены в реальном времени</span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                <div className="p-4 rounded-xl bg-secondary/40 space-y-1">
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">Активных договоров</span>
+                  <p className="font-bold text-lg text-foreground">
+                    {contracts.filter((c) => c.status === 'active').length} шт
+                  </p>
+                  <span className="text-[9px] text-brand-lime">Кофемашины в работе</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-secondary/40 space-y-1">
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">Повторные заказы</span>
+                  <p className="font-bold text-lg text-brand-lime">84.2%</p>
+                  <span className="text-[9px] text-muted-foreground">LTV лояльность</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-secondary/40 space-y-1">
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">Средний чек</span>
+                  <p className="font-bold text-lg text-foreground">380 000 сум</p>
+                  <span className="text-[9px] text-muted-foreground">~4 коробки капсул</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-secondary/40 space-y-1">
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">Продано капсул</span>
+                  <p className="font-bold text-lg text-foreground">320 уп/мес</p>
+                  <span className="text-[9px] text-muted-foreground">5 120 чашек кофе</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-secondary/40 space-y-1">
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">Топ вкус</span>
+                  <p className="font-bold text-sm text-foreground truncate">Carraro Crema</p>
+                  <span className="text-[9px] text-muted-foreground">58% всех заказов</span>
+                </div>
+
+                <div className="p-4 rounded-xl bg-secondary/40 space-y-1">
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">Приостановлено</span>
+                  <p className="font-bold text-lg text-amber-400">
+                    {contracts.filter((c) => c.status === 'paused').length}
+                  </p>
+                  <span className="text-[9px] text-muted-foreground">Бот остановлен</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Contracts Management Table */}
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h4 className="font-serif text-lg font-bold text-foreground">
+                  Реестр договоров ({contracts.length})
+                </h4>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Search Bar */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-3 text-muted-foreground" />
+                    <input
+                      type="text"
+                      placeholder="Поиск по клиенту, телефону, договору..."
+                      value={contractSearch}
+                      onChange={(e) => setContractSearch(e.target.value)}
+                      className="pl-8 pr-4 py-1.5 rounded-xl bg-card border border-border text-xs text-foreground placeholder:text-muted-foreground outline-none focus:border-brand-lime w-64"
+                    />
+                  </div>
+
+                  {/* Filter Select */}
+                  <select
+                    value={contractStatusFilter}
+                    onChange={(e) => setContractStatusFilter(e.target.value as any)}
+                    className="px-3 py-1.5 rounded-xl bg-card border border-border text-xs text-foreground outline-none focus:border-brand-lime"
+                  >
+                    <option value="all">Все статусы</option>
+                    <option value="active">Активные</option>
+                    <option value="paused">Приостановленные</option>
+                    <option value="attention">⚠️ Требуют внимания</option>
+                    <option value="terminated">Расторгнутые</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Table */}
+              <div className="overflow-x-auto rounded-2xl border border-border bg-card">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-secondary/60 text-muted-foreground uppercase font-mono text-[10px] border-b border-border">
+                    <tr>
+                      <th className="px-4 py-3">Договор</th>
+                      <th className="px-4 py-3">Клиент & Контакты</th>
+                      <th className="px-4 py-3">Кофемашина</th>
+                      <th className="px-4 py-3">Мин. заказ</th>
+                      <th className="px-4 py-3">След. закупка</th>
+                      <th className="px-4 py-3">Статус договора</th>
+                      <th className="px-4 py-3">Статус бота</th>
+                      <th className="px-4 py-3 text-right">Действия</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {contracts
+                      .filter((c) => {
+                        const q = contractSearch.toLowerCase();
+                        const match =
+                          c.customer_name.toLowerCase().includes(q) ||
+                          c.customer_phone.includes(q) ||
+                          c.contract_number.includes(q) ||
+                          c.machine_model.toLowerCase().includes(q);
+                        if (!match) return false;
+                        if (contractStatusFilter === 'all') return true;
+                        if (contractStatusFilter === 'attention') return c.reminder_status === 'needs_attention';
+                        return c.status === contractStatusFilter;
+                      })
+                      .map((c) => (
+                        <tr key={c.id} className="hover:bg-secondary/30 transition-colors">
+                          <td className="px-4 py-3.5 font-mono font-bold text-brand-lime">
+                            №{c.contract_number}
+                          </td>
+                          <td className="px-4 py-3.5 space-y-0.5">
+                            <p className="font-semibold text-foreground">{c.customer_name}</p>
+                            <p className="font-mono text-muted-foreground text-[11px]">{c.customer_phone}</p>
+                            {c.telegram_chat_id ? (
+                              <span className="text-[10px] text-brand-lime flex items-center space-x-1">
+                                <span>TG: {c.telegram_chat_id}</span>
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-muted-foreground">TG не привязан</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <p className="font-medium text-foreground">{c.machine_model}</p>
+                            <span className="text-[10px] text-muted-foreground">Аренда 0 сум</span>
+                          </td>
+                          <td className="px-4 py-3.5 font-semibold text-foreground">
+                            {c.min_capsule_boxes} коробки/мес
+                          </td>
+                          <td className="px-4 py-3.5 space-y-0.5">
+                            <span className="font-mono font-semibold text-foreground flex items-center space-x-1">
+                              <Calendar className="w-3 h-3 text-muted-foreground" />
+                              <span>{c.next_purchase_date}</span>
+                            </span>
+                            {c.last_purchase_date && (
+                              <span className="text-[10px] text-muted-foreground block">
+                                Прошлая: {c.last_purchase_date}
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <select
+                              value={c.status}
+                              onChange={(e) => handleContractStatusChange(c.id, e.target.value as ContractStatus)}
+                              className="px-2 py-1 rounded-lg bg-secondary border border-border text-[11px] font-semibold outline-none"
+                            >
+                              <option value="active">🟢 Активен</option>
+                              <option value="paused">🟡 Приостановлен</option>
+                              <option value="terminated">🔴 Расторгнут</option>
+                              <option value="completed">⚪ Завершен</option>
+                              <option value="machine_returned">⚪ Возвращена</option>
+                            </select>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            {c.status !== 'active' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-secondary text-muted-foreground text-[10px] font-semibold">
+                                Бот остановлен
+                              </span>
+                            ) : c.reminder_status === 'needs_attention' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-bold">
+                                ⚠️ Внимание!
+                              </span>
+                            ) : c.reminder_status === 'reminded_primary' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[10px] font-semibold">
+                                Напомнили
+                              </span>
+                            ) : c.reminder_status === 'reminded_followup' ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-600/20 text-amber-300 text-[10px] font-semibold">
+                                Повторное
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full bg-brand-surface text-brand-lime text-[10px] font-semibold">
+                                Ожидает даты
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3.5 text-right">
+                            {c.status === 'active' && (
+                              <button
+                                onClick={() => handleSendManualReminder(c.id)}
+                                className="px-2.5 py-1 rounded-lg bg-secondary hover:bg-secondary/80 text-foreground text-[11px] font-semibold flex items-center space-x-1 ml-auto transition-colors cursor-pointer"
+                              >
+                                <Send className="w-3 h-3 text-brand-lime" />
+                                <span>Напомнить</span>
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+

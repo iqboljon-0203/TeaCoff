@@ -138,3 +138,59 @@ ${ticket.attachment_url ? `📎 <b>Файл:</b> <a href="${ticket.attachment_ur
 
   return sendTelegramMessage(message);
 }
+
+/**
+ * 4. Automated Delivery Status Update to Customer (Point 9 in TZ)
+ * Automatically notifies the customer in Telegram when their order status changes:
+ * confirmed (📦 Собирается) -> delivering (🚚 Передан в доставку) -> completed (✅ Доставлен)
+ */
+export async function sendTelegramDeliveryStatusUpdate(
+  order: Order,
+  status: Order['status'],
+  lang: 'ru' | 'uz' = 'ru'
+): Promise<boolean> {
+  if (!order.telegram_chat_id || !TELEGRAM_BOT_TOKEN) {
+    return true; // No chat ID or token configured, safe bypass
+  }
+
+  const isRu = lang === 'ru';
+  let statusText = '';
+
+  switch (status) {
+    case 'confirmed':
+      statusText = isRu
+        ? `📦 <b>Ваш заказ #TEA-${order.order_number} подтвержден и собирается!</b>\nНаш склад уже бережно комплектует свежие капсулы и кофе.`
+        : `📦 <b>#TEA-${order.order_number} raqamli buyurtmangiz tasdiqlandi va yig'ilmoqda!</b>\nOmborimiz yangi qovurilgan kofe va kapsulalarni jo'natishga tayyorlamoqda.`;
+      break;
+    case 'delivering':
+      statusText = isRu
+        ? `🚚 <b>Заказ #TEA-${order.order_number} передан в доставку!</b>\nКурьер уже в пути. Ожидайте звонка перед прибытием по адресу: <i>${order.delivery_address}</i>.`
+        : `🚚 <b>#TEA-${order.order_number} raqamli buyurtma kuryerga berildi va yo'lda!</b>\nKuryer quyidagi manzilga yetib borishdan oldin qo'ng'iroq qiladi: <i>${order.delivery_address}</i>.`;
+      break;
+    case 'completed':
+      statusText = isRu
+        ? `✅ <b>Заказ #TEA-${order.order_number} успешно доставлен!</b>\nСпасибо, что выбираете TeaCoff! Приятного кофепития! ☕✨`
+        : `✅ <b>#TEA-${order.order_number} raqamli buyurtma muvaffaqiyatli yetkazildi!</b>\nTeaCoff ni tanlaganingiz uchun rahmat! Yoqimli qahva lazzatini tilaymiz! ☕✨`;
+      break;
+    default:
+      return true;
+  }
+
+  try {
+    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: order.telegram_chat_id,
+        text: statusText,
+        parse_mode: 'HTML',
+      }),
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('Failed to send automated delivery status notification:', err);
+    return false;
+  }
+}
+

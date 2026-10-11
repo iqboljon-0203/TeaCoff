@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createOrder } from '@/lib/supabase';
-import { sendTelegramOrderNotification } from '@/lib/telegram';
+import { createOrder, updateOrderStatus } from '@/lib/supabase';
+import { sendTelegramOrderNotification, sendTelegramDeliveryStatusUpdate } from '@/lib/telegram';
 
 export async function POST(req: Request) {
   try {
@@ -16,6 +16,8 @@ export async function POST(req: Request) {
       delivery_fee,
       payment_method,
       notes,
+      contract_id,
+      telegram_chat_id,
     } = body;
 
     if (!customer_name || !customer_phone || !district || !delivery_address || !items?.length) {
@@ -36,6 +38,8 @@ export async function POST(req: Request) {
       payment_method: payment_method || 'unified_qr',
       payment_status: 'pending',
       notes: notes || '',
+      contract_id,
+      telegram_chat_id,
       status: 'new',
     });
 
@@ -51,3 +55,24 @@ export async function POST(req: Request) {
     );
   }
 }
+
+export async function PATCH(req: Request) {
+  try {
+    const { orderId, status } = await req.json();
+    if (!orderId || !status) {
+      return NextResponse.json({ error: 'orderId and status are required' }, { status: 400 });
+    }
+
+    const updated = await updateOrderStatus(orderId, status);
+    if (updated) {
+      // Point 9 in TZ: Automatically notify the client of the delivery progress
+      await sendTelegramDeliveryStatusUpdate(updated, status);
+    }
+
+    return NextResponse.json({ success: true, order: updated });
+  } catch (error) {
+    console.error('API /api/orders PATCH error:', error);
+    return NextResponse.json({ error: 'Failed to update order' }, { status: 500 });
+  }
+}
+
